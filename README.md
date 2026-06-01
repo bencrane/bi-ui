@@ -46,7 +46,7 @@ validated as safe SQL identifiers.
 |-----|----------|-------------|
 | `QUACK_TOKEN` | yes | Shared quack auth token; must equal bi-compute's. |
 | `ANTHROPIC_API_KEY` | yes | For text-to-SQL (`shared-api-keys/prd`). |
-| `AUDIENCE_R2_PREFIX` | for saving | R2 prefix for audiences, e.g. `s3://<bucket>/audiences`. |
+| `COHORTS_R2_PREFIX` | for saving | R2 prefix for audiences, e.g. `s3://<bucket>/audiences`. |
 | `QUACK_URI` | no | Defaults to `quack:bi-compute:10000`. |
 | `SQL_MODEL` | no | Defaults to `claude-sonnet-4-6`. |
 | `PORT` | injected | Render sets it; Streamlit binds `0.0.0.0:$PORT`. |

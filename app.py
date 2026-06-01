@@ -39,7 +39,7 @@ QUACK_DISABLE_SSL = os.environ.get("QUACK_DISABLE_SSL", "true").lower() == "true
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SQL_MODEL = os.environ.get("SQL_MODEL", "claude-sonnet-4-6")
 # R2 destination for materialized audiences, e.g. s3://dex-curated/audiences
-AUDIENCE_R2_PREFIX = os.environ.get("AUDIENCE_R2_PREFIX", "").rstrip("/")
+COHORTS_R2_PREFIX = os.environ.get("COHORTS_R2_PREFIX", "").rstrip("/")
 
 ATTACH_ALIAS = "data_sink"
 _DISABLE_SSL_SQL = "true" if QUACK_DISABLE_SSL else "false"
@@ -176,12 +176,12 @@ def materialize_audience(con: duckdb.DuckDBPyConnection, name: str, select_sql: 
     """
     if not _IDENT_RE.match(name):
         raise ValueError("Audience name must be lowercase letters/digits/underscores, ≤ 63 chars.")
-    if not AUDIENCE_R2_PREFIX:
-        raise RuntimeError("AUDIENCE_R2_PREFIX is not configured — cannot materialize to R2.")
+    if not COHORTS_R2_PREFIX:
+        raise RuntimeError("COHORTS_R2_PREFIX is not configured — cannot materialize to R2.")
 
     # Materialize the full population, not the previewed 1000.
     definition = _TRAILING_LIMIT_RE.sub("", select_sql).strip()
-    target = f"{AUDIENCE_R2_PREFIX}/{name}"
+    target = f"{COHORTS_R2_PREFIX}/{name}"
 
     run_remote(con, f"COPY ({definition}) TO '{_sql_str(target)}' (FORMAT lance)")
     return target
@@ -204,7 +204,7 @@ def main() -> None:
     st.subheader("Connection")
     st.write(f"**Endpoint:** `{QUACK_URI}` ({'plain HTTP' if QUACK_DISABLE_SSL else 'TLS'})")
     st.write(f"**Model:** `{SQL_MODEL}`")
-    st.write(f"**R2 sink:** `{AUDIENCE_R2_PREFIX or '⚠ not configured'}`")
+    st.write(f"**R2 sink:** `{COHORTS_R2_PREFIX or '⚠ not configured'}`")
     st.subheader(f"Lance datasets ({len(DATASETS)})")
     st.code("\n".join(DATASETS), language=None)
 

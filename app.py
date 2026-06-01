@@ -20,6 +20,7 @@ Why everything routes through quack_query() instead of the ATTACH alias:
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -74,52 +75,32 @@ def run_remote(con: duckdb.DuckDBPyConnection, sql: str):
     )
 
 
-# --- Lance dataset discovery: recursively find every dataset under ACTIVE_PREFIX ---
+# --- Dataset catalog: read the pre-built manifest (instant; no globbing/DESCRIBE at boot) ---
+# Built offline by scripts/generate_manifest.py and written to <active>/catalog.json. The UI
+# reads that one small JSON through bi-compute (httpfs read_text), so boot never scans R2.
 ACTIVE_PREFIX = os.environ.get("LANCE_ACTIVE_PREFIX", "s3://data-sink/active").rstrip("/")
+CATALOG_PATH = os.environ.get("CATALOG_PATH", f"{ACTIVE_PREFIX}/catalog.json")
 
 
-def _domain_of(root: str) -> tuple[str, str]:
-    """Return (domain, relative-name): domain is the first path segment under active/."""
-    rel = root.split("/active/", 1)[-1] if "/active/" in root else root.rstrip("/").rsplit("/", 1)[-1]
-    parts = rel.split("/")
-    return (parts[0], rel) if len(parts) > 1 else ("(top level)", rel)
-
-
-@st.cache_data(ttl=1800, show_spinner="Discovering Lance datasets in R2…")
-def discover_datasets() -> tuple[str, dict[str, list[dict]]]:
-    """Recursively discover every Lance dataset under ACTIVE_PREFIX and describe each.
-
-    A Lance dataset root is identified by its `_versions/*.manifest` marker (the root is
-    that path with the marker stripped). The glob and per-dataset DESCRIBE run server-side
-    on bi-compute (httpfs + lance + R2). Cached for 30 min; a cold scan walks the whole
-    active/ prefix, so first load is slow when there are many datasets.
-    Returns (schema_text grouped by domain for the prompt, {domain: [{path, name, cols}]}).
+@st.cache_data(ttl=3600, show_spinner="Loading dataset catalog…")
+def load_catalog() -> tuple[str, dict[str, list[dict]]]:
+    """Read the pre-compiled catalog.json and build the LLM schema text + per-domain map for
+    the sidebar. One small read through bi-compute — no bucket globbing, no live DESCRIBE on
+    the request path (that work lives in scripts/generate_manifest.py, run by the pipeline).
     """
     con = get_connection()
-    manifests = run_remote(
-        con, f"SELECT file FROM glob('{_sql_str(ACTIVE_PREFIX)}/**/_versions/*.manifest')"
-    ).fetchall()
-    roots = sorted({f.rsplit("/_versions/", 1)[0] for (f,) in manifests})
-
-    by_domain: dict[str, list[dict]] = {}
-    for root in roots:
-        domain, rel = _domain_of(root)
-        try:
-            cols = run_remote(
-                con, f"DESCRIBE SELECT * FROM __lance_scan('{_sql_str(root)}')"
-            ).fetchall()
-            colstr = ", ".join(f"{c[0]} {c[1]}" for c in cols)
-        except Exception as exc:
-            colstr = f"(schema unavailable: {str(exc).splitlines()[0][:60]})"
-        by_domain.setdefault(domain, []).append({"path": root, "name": rel, "cols": colstr})
+    rows = run_remote(con, f"SELECT content FROM read_text('{_sql_str(CATALOG_PATH)}')").fetchall()
+    catalog = json.loads(rows[0][0])
+    domains: dict[str, list[dict]] = catalog.get("domains", {})
 
     lines = []
-    for domain in sorted(by_domain):
+    for domain in sorted(domains):
         lines.append(f"### domain: {domain}")
-        for d in by_domain[domain]:
-            lines.append(f"- {d['path']}\n    columns: {d['cols']}")
-    schema_text = "\n".join(lines) if lines else f"(no Lance datasets found under {ACTIVE_PREFIX})"
-    return schema_text, by_domain
+        for d in domains[domain]:
+            cols = ", ".join(f"{c} {t}" for c, t in d.get("schema", {}).items())
+            lines.append(f"- {d['path']}\n    columns: {cols}")
+    schema_text = "\n".join(lines) if lines else "(catalog is empty)"
+    return schema_text, domains
 
 
 SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for a cohort-building tool. All data
@@ -216,7 +197,7 @@ def main() -> None:
 
   try:
     con = get_connection()
-    schema_text, by_domain = discover_datasets()
+    schema_text, by_domain = load_catalog()
   except Exception as exc:  # surface the live hop clearly instead of a blank page
     st.error(f"Could not initialize the bi-compute connection: {exc}")
     st.stop()
@@ -230,7 +211,7 @@ def main() -> None:
     st.subheader(f"Lance datasets ({total})")
     for domain in sorted(by_domain):
       with st.expander(f"{domain} ({len(by_domain[domain])})"):
-        st.code("\n".join(d["name"] for d in by_domain[domain]), language=None)
+        st.code("\n".join(d["dataset_name"] for d in by_domain[domain]), language=None)
 
   for turn in st.session_state.setdefault("history", []):
     with st.chat_message(turn["role"]):

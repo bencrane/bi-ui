@@ -1,7 +1,7 @@
-# bi-ui — AI-Native Audience Builder
+# bi-ui — AI-Native Cohort Builder
 
 A stateless **Streamlit** front end for natural-language data exploration and
-audience materialization over **bi-compute**, the DuckDB **Quack** HTTP compute
+cohort materialization over **bi-compute**, the DuckDB **Quack** HTTP compute
 engine (a Render Private Service).
 
 ```
@@ -30,14 +30,14 @@ bi-compute (DuckDB 1.5.3 + quack + lance)  ──►  R2 (LanceDB datasets)
   bare `FROM 's3://…'` replacement scan (the R2 dataset paths have no `.lance` suffix, so
   only `__lance_scan` reads them). The model returns a single DuckDB `SELECT`; the app
   enforces read-only via DuckDB's statement parser before executing.
-- **Save Audience.** Materializes the (un-limited) query as a Lance dataset on R2 with
-  `COPY (<sql>) TO 's3://…/audiences/<name>' (FORMAT lance)` on bi-compute — queryable
+- **Save Cohort.** Materializes the (un-limited) query as a Lance dataset on R2 with
+  `COPY (<sql>) TO 's3://…/cohorts/<name>' (FORMAT lance)` on bi-compute — queryable
   afterward by the same `__lance_scan('<path>')`.
 
 ## Zero local storage
 
 No dataframe or customer record is written to the container disk. Reads return to
-memory only; every mutation is a server-side `COPY` to R2. Audience names are
+memory only; every mutation is a server-side `COPY` to R2. Cohort names are
 validated as safe SQL identifiers.
 
 ## Environment contract
@@ -46,7 +46,7 @@ validated as safe SQL identifiers.
 |-----|----------|-------------|
 | `QUACK_TOKEN` | yes | Shared quack auth token; must equal bi-compute's. |
 | `ANTHROPIC_API_KEY` | yes | For text-to-SQL (`shared-api-keys/prd`). |
-| `COHORTS_R2_PREFIX` | for saving | R2 prefix for audiences, e.g. `s3://<bucket>/audiences`. |
+| `COHORTS_R2_PREFIX` | for saving | R2 prefix for cohorts, e.g. `s3://<bucket>/cohorts`. |
 | `QUACK_URI` | no | Defaults to `quack:bi-compute:10000`. |
 | `SQL_MODEL` | no | Defaults to `claude-sonnet-4-6`. |
 | `PORT` | injected | Render sets it; Streamlit binds `0.0.0.0:$PORT`. |

@@ -74,31 +74,52 @@ def run_remote(con: duckdb.DuckDBPyConnection, sql: str):
     )
 
 
-# --- core Lance datasets (hardcoded; queried by __lance_scan on their R2 path) ----
-DATASETS = [
-    "s3://data-sink/active/bridge_sam_fmcsa_domain",
-    "s3://data-sink/active/bridge_fmcsa_pdl_domain",
-    "s3://data-sink/active/uspto_historical",
-]
+# --- Lance dataset discovery: recursively find every dataset under ACTIVE_PREFIX ---
+ACTIVE_PREFIX = os.environ.get("LANCE_ACTIVE_PREFIX", "s3://data-sink/active").rstrip("/")
 
 
-@st.cache_data(ttl=600, show_spinner="Describing Lance datasets on bi-compute…")
-def load_schema() -> str:
-    """Describe the three fixed Lance datasets once, server-side, to give the model real
-    column names. This is DESCRIBE on three known paths — not Polaris, not bucket
-    discovery. Falls back to a path-only entry if a dataset cannot be described."""
+def _domain_of(root: str) -> tuple[str, str]:
+    """Return (domain, relative-name): domain is the first path segment under active/."""
+    rel = root.split("/active/", 1)[-1] if "/active/" in root else root.rstrip("/").rsplit("/", 1)[-1]
+    parts = rel.split("/")
+    return (parts[0], rel) if len(parts) > 1 else ("(top level)", rel)
+
+
+@st.cache_data(ttl=1800, show_spinner="Discovering Lance datasets in R2…")
+def discover_datasets() -> tuple[str, dict[str, list[dict]]]:
+    """Recursively discover every Lance dataset under ACTIVE_PREFIX and describe each.
+
+    A Lance dataset root is identified by its `_versions/*.manifest` marker (the root is
+    that path with the marker stripped). The glob and per-dataset DESCRIBE run server-side
+    on bi-compute (httpfs + lance + R2). Cached for 30 min; a cold scan walks the whole
+    active/ prefix, so first load is slow when there are many datasets.
+    Returns (schema_text grouped by domain for the prompt, {domain: [{path, name, cols}]}).
+    """
     con = get_connection()
-    blocks = []
-    for path in DATASETS:
+    manifests = run_remote(
+        con, f"SELECT file FROM glob('{_sql_str(ACTIVE_PREFIX)}/**/_versions/*.manifest')"
+    ).fetchall()
+    roots = sorted({f.rsplit("/_versions/", 1)[0] for (f,) in manifests})
+
+    by_domain: dict[str, list[dict]] = {}
+    for root in roots:
+        domain, rel = _domain_of(root)
         try:
-            rows = run_remote(
-                con, f"DESCRIBE SELECT * FROM __lance_scan('{_sql_str(path)}')"
+            cols = run_remote(
+                con, f"DESCRIBE SELECT * FROM __lance_scan('{_sql_str(root)}')"
             ).fetchall()
-            cols = ", ".join(f"{r[0]} {r[1]}" for r in rows)
-            blocks.append(f"- {path}\n    columns: {cols}")
+            colstr = ", ".join(f"{c[0]} {c[1]}" for c in cols)
         except Exception as exc:
-            blocks.append(f"- {path}\n    (columns unavailable: {str(exc).splitlines()[0][:90]})")
-    return "\n".join(blocks)
+            colstr = f"(schema unavailable: {str(exc).splitlines()[0][:60]})"
+        by_domain.setdefault(domain, []).append({"path": root, "name": rel, "cols": colstr})
+
+    lines = []
+    for domain in sorted(by_domain):
+        lines.append(f"### domain: {domain}")
+        for d in by_domain[domain]:
+            lines.append(f"- {d['path']}\n    columns: {d['cols']}")
+    schema_text = "\n".join(lines) if lines else f"(no Lance datasets found under {ACTIVE_PREFIX})"
+    return schema_text, by_domain
 
 
 SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for a cohort-building tool. All data
@@ -113,7 +134,7 @@ CRITICAL — how to read a dataset (DuckDB lance extension):
 - NEVER use FROM 's3://...' directly, lance_scan(), read_lance(), or read_parquet(); only __lance_scan() reads these paths.
 - DuckDB SQL dialect only.
 
-AVAILABLE DATASETS (use only these paths and columns):
+AVAILABLE DATASETS — discovered live from R2, grouped by domain (use only these paths and columns):
 {schema}
 
 RULES:
@@ -195,7 +216,7 @@ def main() -> None:
 
   try:
     con = get_connection()
-    schema_text = load_schema()
+    schema_text, by_domain = discover_datasets()
   except Exception as exc:  # surface the live hop clearly instead of a blank page
     st.error(f"Could not initialize the bi-compute connection: {exc}")
     st.stop()
@@ -205,8 +226,11 @@ def main() -> None:
     st.write(f"**Endpoint:** `{QUACK_URI}` ({'plain HTTP' if QUACK_DISABLE_SSL else 'TLS'})")
     st.write(f"**Model:** `{SQL_MODEL}`")
     st.write(f"**R2 sink:** `{COHORTS_R2_PREFIX or '⚠ not configured'}`")
-    st.subheader(f"Lance datasets ({len(DATASETS)})")
-    st.code("\n".join(DATASETS), language=None)
+    total = sum(len(v) for v in by_domain.values())
+    st.subheader(f"Lance datasets ({total})")
+    for domain in sorted(by_domain):
+      with st.expander(f"{domain} ({len(by_domain[domain])})"):
+        st.code("\n".join(d["name"] for d in by_domain[domain]), language=None)
 
   for turn in st.session_state.setdefault("history", []):
     with st.chat_message(turn["role"]):

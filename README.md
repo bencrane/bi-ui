@@ -24,12 +24,17 @@ bi-compute (DuckDB 1.5.3 + quack + lance)  ──►  R2 (LanceDB datasets)
   bi-compute via `quack_query(uri, sql)`. The `ATTACH` alias itself is a streaming
   scan source and cannot serve joins or DDL in DuckDB 1.5.3, so `quack_query` (full
   server-side planner) is the execution path.
-- **Text-to-SQL.** The three core LanceDB datasets are hardcoded; their columns are read
-  once via `DESCRIBE SELECT * FROM __lance_scan('s3://…')` and fed to Claude with a strict
-  prompt requiring `__lance_scan('<path>')` access — never bare table names, and never the
-  bare `FROM 's3://…'` replacement scan (the R2 dataset paths have no `.lance` suffix, so
-  only `__lance_scan` reads them). The model returns a single DuckDB `SELECT`; the app
-  enforces read-only via DuckDB's statement parser before executing.
+- **Dataset discovery.** Every Lance dataset under `LANCE_ACTIVE_PREFIX` (default
+  `s3://data-sink/active`) is found recursively by globbing for its `_versions/*.manifest`
+  marker, then described via `DESCRIBE SELECT * FROM __lance_scan('s3://…')`. Datasets are
+  grouped by their first path segment (domain), and the full schema is cached (30 min) and
+  fed to the model. A cold scan walks the whole `active/` prefix, so first load is slower
+  with many datasets.
+- **Text-to-SQL.** The discovered schema is fed to Claude with a strict prompt requiring
+  `__lance_scan('<path>')` access — never bare table names, and never the bare `FROM 's3://…'`
+  replacement scan (the R2 dataset paths have no `.lance` suffix, so only `__lance_scan`
+  reads them). The model returns a single DuckDB `SELECT`; the app enforces read-only via
+  DuckDB's statement parser before executing.
 - **Save Cohort.** Materializes the (un-limited) query as a Lance dataset on R2 with
   `COPY (<sql>) TO 's3://…/cohorts/<name>' (FORMAT lance)` on bi-compute — queryable
   afterward by the same `__lance_scan('<path>')`.
@@ -47,6 +52,7 @@ validated as safe SQL identifiers.
 | `QUACK_TOKEN` | yes | Shared quack auth token; must equal bi-compute's. |
 | `ANTHROPIC_API_KEY` | yes | For text-to-SQL (`shared-api-keys/prd`). |
 | `COHORTS_R2_PREFIX` | for saving | R2 prefix for cohorts, e.g. `s3://<bucket>/cohorts`. |
+| `LANCE_ACTIVE_PREFIX` | no | Root scanned for Lance datasets. Defaults to `s3://data-sink/active`. |
 | `QUACK_URI` | no | Defaults to `quack:bi-compute:10000`. |
 | `SQL_MODEL` | no | Defaults to `claude-sonnet-4-6`. |
 | `PORT` | injected | Render sets it; Streamlit binds `0.0.0.0:$PORT`. |

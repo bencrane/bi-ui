@@ -1,0 +1,6 @@
+# duckdb pinned to match bi-compute exactly — the quack client/server protocol
+# is only guaranteed compatible within the same DuckDB version.
+duckdb==1.5.3
+streamlit==1.40.2
+anthropic==0.69.0
+pandas==2.2.3

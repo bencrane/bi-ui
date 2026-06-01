@@ -1,0 +1,25 @@
+# Render Blueprint — bi-ui Streamlit audience builder.
+# MUST run in the same region as bi-compute (ohio): the quack endpoint is a Render
+# Private Service reachable only on the regional private network.
+services:
+  - type: web
+    name: bi-ui
+    runtime: python
+    plan: standard
+    region: ohio                       # MUST match bi-compute's region (private networking is regional)
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    # Render injects $PORT; Streamlit must bind it on 0.0.0.0.
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: QUACK_URI
+        value: quack:bi-compute:10000
+      - key: SQL_MODEL
+        value: claude-sonnet-4-6
+      # Secrets — set in the dashboard / sourced from Doppler. Never commit values.
+      - key: QUACK_TOKEN              # must equal bi-compute's QUACK_TOKEN (the auth_token it serves)
+        sync: false
+      - key: ANTHROPIC_API_KEY        # Doppler shared-api-keys/prd
+        sync: false
+      - key: AUDIENCE_R2_PREFIX       # e.g. s3://<curated-bucket>/audiences  (destination for materialized audiences)
+        sync: false

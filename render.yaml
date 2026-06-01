@@ -1,4 +1,4 @@
-# Render Blueprint — bi-ui Streamlit audience builder.
+# Render Blueprint — bi-ui Streamlit cohort builder.
 # MUST run in the same region as bi-compute (ohio): the quack endpoint is a Render
 # Private Service reachable only on the regional private network.
 services:
@@ -21,5 +21,5 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY        # Doppler shared-api-keys/prd
         sync: false
-      - key: COHORTS_R2_PREFIX       # e.g. s3://<curated-bucket>/audiences  (destination for materialized audiences)
+      - key: COHORTS_R2_PREFIX       # e.g. s3://<curated-bucket>/cohorts  (destination for materialized cohorts)
         sync: false

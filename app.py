@@ -1,10 +1,10 @@
 """
-bi-ui — AI-native audience builder over the bi-compute DuckDB Quack engine.
+bi-ui — AI-native cohort builder over the bi-compute DuckDB Quack engine.
 
 A stateless Streamlit front end:
   • natural language  -> DuckDB SQL (Claude)
   • SQL executes *server-side* on bi-compute via the quack client/server protocol
-  • audiences are materialized durably to R2 (COPY ... TO 's3://...')
+  • cohorts are materialized durably to R2 (COPY ... TO 's3://...')
 
 Zero local storage: no dataframe and no customer record is ever written to this
 container's disk. Every read and every mutation is executed on bi-compute through
@@ -38,7 +38,7 @@ QUACK_TOKEN = os.environ.get("QUACK_TOKEN", "")
 QUACK_DISABLE_SSL = os.environ.get("QUACK_DISABLE_SSL", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SQL_MODEL = os.environ.get("SQL_MODEL", "claude-sonnet-4-6")
-# R2 destination for materialized audiences, e.g. s3://dex-curated/audiences
+# R2 destination for materialized cohorts, e.g. s3://data-sink/active/cohorts
 COHORTS_R2_PREFIX = os.environ.get("COHORTS_R2_PREFIX", "").rstrip("/")
 
 ATTACH_ALIAS = "data_sink"
@@ -101,7 +101,7 @@ def load_schema() -> str:
     return "\n".join(blocks)
 
 
-SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for an audience-building tool. All data
+SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for a cohort-building tool. All data
 lives in LanceDB datasets on R2; your SQL runs server-side on bi-compute (DuckDB + lance extension).
 
 CRITICAL — how to read a dataset (DuckDB lance extension):
@@ -121,7 +121,7 @@ RULES:
 2. Read-only: a single SELECT, optionally led by WITH CTEs. Never INSERT/UPDATE/DELETE/CREATE/COPY/ATTACH/PRAGMA/SET.
 3. Use only the dataset paths and columns listed above. If the request cannot be satisfied,
    output exactly: SELECT 'insufficient schema' AS error
-4. Qualify columns when joining; prefer explicit column lists for audience definitions.
+4. Qualify columns when joining; prefer explicit column lists for cohort definitions.
 5. End with LIMIT 1000 unless the user explicitly asks for a full extract or an exact count."""
 
 
@@ -167,15 +167,15 @@ def assert_read_only(con: duckdb.DuckDBPyConnection, sql: str) -> None:
         raise ValueError(f"Only read-only SELECT queries are allowed (parsed as {statements[0].type}).")
 
 
-def materialize_audience(con: duckdb.DuckDBPyConnection, name: str, select_sql: str) -> str:
-    """Persist the audience as a Lance dataset on R2 (matches the data architecture).
+def materialize_cohort(con: duckdb.DuckDBPyConnection, name: str, select_sql: str) -> str:
+    """Persist the cohort as a Lance dataset on R2 (matches the data architecture).
 
     The COPY runs on bi-compute (which holds the R2 secret) via quack_query and writes
     straight to object storage — the local container writes nothing. The result is a
     Lance dataset at <prefix>/<name>, queryable by the same __lance_scan('<path>').
     """
     if not _IDENT_RE.match(name):
-        raise ValueError("Audience name must be lowercase letters/digits/underscores, ≤ 63 chars.")
+        raise ValueError("Cohort name must be lowercase letters/digits/underscores, ≤ 63 chars.")
     if not COHORTS_R2_PREFIX:
         raise RuntimeError("COHORTS_R2_PREFIX is not configured — cannot materialize to R2.")
 
@@ -189,9 +189,9 @@ def materialize_audience(con: duckdb.DuckDBPyConnection, name: str, select_sql: 
 
 # --- UI ----------------------------------------------------------------------
 def main() -> None:
-  st.set_page_config(page_title="bi-ui · Audience Builder", layout="wide")
-  st.title("🦆 Audience Builder")
-  st.caption("Natural-language exploration over bi-compute · audiences materialize to R2")
+  st.set_page_config(page_title="bi-ui · Cohort Builder", layout="wide")
+  st.title("🦆 Cohort Builder")
+  st.caption("Natural-language exploration over bi-compute · cohorts materialize to R2")
 
   try:
     con = get_connection()
@@ -212,7 +212,7 @@ def main() -> None:
     with st.chat_message(turn["role"]):
       st.markdown(turn["content"])
 
-  if question := st.chat_input("Describe the audience in plain English…"):
+  if question := st.chat_input("Describe the cohort in plain English…"):
     st.session_state.history.append({"role": "user", "content": question})
     with st.chat_message("user"):
       st.markdown(question)
@@ -233,22 +233,22 @@ def main() -> None:
         st.error(f"{exc}")
         st.session_state.history.append({"role": "assistant", "content": f"⚠ {exc}"})
 
-  # --- Save Audience: only when there is a successful result to materialize ---
+  # --- Save Cohort: only when there is a successful result to materialize ---
   if isinstance(st.session_state.get("last_df"), pd.DataFrame):
     st.divider()
     left, right = st.columns([3, 1])
     with left:
-      audience_name = st.text_input(
-        "Audience name",
+      cohort_name = st.text_input(
+        "Cohort name",
         placeholder="e.g. fmcsa_high_intent_q3",
-        help="Lowercase letters, digits, underscores. Becomes audiences.<name> and the R2 object key.",
+        help="Lowercase letters/digits/underscores — the Lance dataset name written under the cohorts R2 prefix.",
       )
     with right:
       st.write("")
       st.write("")
-      if st.button("💾 Save Audience", type="primary", use_container_width=True):
+      if st.button("💾 Save Cohort", type="primary", use_container_width=True):
         try:
-          target = materialize_audience(con, audience_name.strip(), st.session_state["last_sql"])
+          target = materialize_cohort(con, cohort_name.strip(), st.session_state["last_sql"])
           st.success(f"Materialized Lance dataset → `{target}` · query with `__lance_scan('{target}')`")
         except Exception as exc:
           st.error(f"Save failed: {exc}")

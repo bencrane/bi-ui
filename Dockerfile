@@ -1,7 +1,18 @@
 FROM metabase/metabase:latest
 
-# Download the community DuckDB driver into the Metabase plugins directory
-ADD https://github.com/AlexR2D2/metabase-core-duckdb-driver/releases/latest/download/duckdb.metabase-driver.jar /plugins/
+# Explicitly define where Metabase should look for plugins
+ENV MB_PLUGINS_DIR=/plugins/
 
-# Ensure proper permissions for the JVM to load the plugin on startup
-RUN chmod 777 /plugins/duckdb.metabase-driver.jar
+# Briefly switch to root to set up the directory structure and permissions
+USER root
+RUN mkdir -p /plugins/
+
+# Download the actively maintained MotherDuck driver
+ADD https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest/download/duckdb.metabase-driver.jar /plugins/
+
+# Grant the metabase user (UID 2000) full ownership and execution rights
+RUN chmod 777 /plugins/duckdb.metabase-driver.jar && \
+    chown -R 2000:2000 /plugins/
+
+# Drop back to the secure, non-root metabase user
+USER 2000

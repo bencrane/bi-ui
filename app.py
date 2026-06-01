@@ -74,46 +74,55 @@ def run_remote(con: duckdb.DuckDBPyConnection, sql: str):
     )
 
 
-# --- live schema, introspected server-side and fed to the model --------------
-@st.cache_data(ttl=300, show_spinner="Loading live schema from bi-compute…")
-def load_schema() -> tuple[str, list[str]]:
+# --- core Lance datasets (hardcoded; queried by __lance_scan on their R2 path) ----
+DATASETS = [
+    "s3://data-sink/active/bridge_sam_fmcsa_domain",
+    "s3://data-sink/active/bridge_fmcsa_pdl_domain",
+    "s3://data-sink/active/uspto_historical",
+]
+
+
+@st.cache_data(ttl=600, show_spinner="Describing Lance datasets on bi-compute…")
+def load_schema() -> str:
+    """Describe the three fixed Lance datasets once, server-side, to give the model real
+    column names. This is DESCRIBE on three known paths — not Polaris, not bucket
+    discovery. Falls back to a path-only entry if a dataset cannot be described."""
     con = get_connection()
-    rows = run_remote(
-        con,
-        "SELECT table_schema, table_name, column_name, data_type "
-        "FROM information_schema.columns "
-        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'audiences') "
-        "ORDER BY table_schema, table_name, ordinal_position",
-    ).fetchall()
-
-    tables: dict[str, list[str]] = {}
-    for schema, table, column, dtype in rows:
-        key = table if schema == "main" else f"{schema}.{table}"
-        tables.setdefault(key, []).append(f"{column} {dtype}")
-
-    lines = [f"- {name}({', '.join(cols)})" for name, cols in sorted(tables.items())]
-    return "\n".join(lines) if lines else "(no tables visible)", sorted(tables)
+    blocks = []
+    for path in DATASETS:
+        try:
+            rows = run_remote(
+                con, f"DESCRIBE SELECT * FROM __lance_scan('{_sql_str(path)}')"
+            ).fetchall()
+            cols = ", ".join(f"{r[0]} {r[1]}" for r in rows)
+            blocks.append(f"- {path}\n    columns: {cols}")
+        except Exception as exc:
+            blocks.append(f"- {path}\n    (columns unavailable: {str(exc).splitlines()[0][:90]})")
+    return "\n".join(blocks)
 
 
-SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for an audience-building tool.
+SYSTEM_PROMPT = """You are a precise DuckDB SQL generator for an audience-building tool. All data
+lives in LanceDB datasets on R2; your SQL runs server-side on bi-compute (DuckDB + lance extension).
 
-Your SQL executes on a remote DuckDB server (bi-compute), so reference every table
-by the exact server-local name in the schema below — never prefix names with
-'data_sink'. Emit DuckDB SQL dialect only.
+CRITICAL — how to read a dataset (DuckDB lance extension):
+- Read a dataset ONLY via the lance scan function on its quoted S3 path:
+      SELECT ... FROM __lance_scan('s3://data-sink/active/<dataset>') WHERE ...
+- Join datasets by giving each scan an alias:
+      FROM __lance_scan('s3://.../a') a JOIN __lance_scan('s3://.../b') b ON a.key = b.key
+- NEVER use a bare table name (FROM bridge_sam_fmcsa_domain is INVALID — there are no named tables).
+- NEVER use FROM 's3://...' directly, lance_scan(), read_lance(), or read_parquet(); only __lance_scan() reads these paths.
+- DuckDB SQL dialect only.
 
-LIVE SCHEMA (authoritative — use only these tables and columns):
+AVAILABLE DATASETS (use only these paths and columns):
 {schema}
 
 RULES:
-1. Output exactly ONE statement and NOTHING else: no prose, no explanation, no
-   markdown fences, no comments.
-2. The statement MUST be read-only — a single SELECT, optionally led by WITH CTEs.
-   Never emit INSERT/UPDATE/DELETE/CREATE/ATTACH/COPY/PRAGMA/SET/etc.
-3. Use only tables and columns present in the schema above. If the request cannot
-   be answered from this schema, output exactly: SELECT 'insufficient schema' AS error
+1. Output exactly ONE statement and NOTHING else: no prose, no markdown fences, no comments.
+2. Read-only: a single SELECT, optionally led by WITH CTEs. Never INSERT/UPDATE/DELETE/CREATE/COPY/ATTACH/PRAGMA/SET.
+3. Use only the dataset paths and columns listed above. If the request cannot be satisfied,
+   output exactly: SELECT 'insufficient schema' AS error
 4. Qualify columns when joining; prefer explicit column lists for audience definitions.
-5. End with LIMIT 1000 unless the user explicitly asks for a full extract or an exact count.
-6. Use standard DuckDB functions and syntax."""
+5. End with LIMIT 1000 unless the user explicitly asks for a full extract or an exact count."""
 
 
 def strip_fences(text: str) -> str:
@@ -159,11 +168,11 @@ def assert_read_only(con: duckdb.DuckDBPyConnection, sql: str) -> None:
 
 
 def materialize_audience(con: duckdb.DuckDBPyConnection, name: str, select_sql: str) -> str:
-    """Persist the audience to R2 (durable) and register a queryable catalog table.
+    """Persist the audience as a Lance dataset on R2 (matches the data architecture).
 
-    The mutation runs on bi-compute (which holds the R2 secret) via quack_query and
-    writes straight to object storage — satisfying the 'all mutations pass through to
-    R2' guardrail. The local container writes nothing.
+    The COPY runs on bi-compute (which holds the R2 secret) via quack_query and writes
+    straight to object storage — the local container writes nothing. The result is a
+    Lance dataset at <prefix>/<name>, queryable by the same __lance_scan('<path>').
     """
     if not _IDENT_RE.match(name):
         raise ValueError("Audience name must be lowercase letters/digits/underscores, ≤ 63 chars.")
@@ -172,15 +181,9 @@ def materialize_audience(con: duckdb.DuckDBPyConnection, name: str, select_sql: 
 
     # Materialize the full population, not the previewed 1000.
     definition = _TRAILING_LIMIT_RE.sub("", select_sql).strip()
-    target = f"{AUDIENCE_R2_PREFIX}/{name}/data.parquet"
+    target = f"{AUDIENCE_R2_PREFIX}/{name}"
 
-    run_remote(con, f"COPY ({definition}) TO '{_sql_str(target)}' (FORMAT parquet)")
-    run_remote(con, "CREATE SCHEMA IF NOT EXISTS audiences")
-    run_remote(
-        con,
-        f'CREATE OR REPLACE TABLE audiences."{name}" AS '
-        f"SELECT * FROM read_parquet('{_sql_str(target)}')",
-    )
+    run_remote(con, f"COPY ({definition}) TO '{_sql_str(target)}' (FORMAT lance)")
     return target
 
 
@@ -192,7 +195,7 @@ def main() -> None:
 
   try:
     con = get_connection()
-    schema_text, table_names = load_schema()
+    schema_text = load_schema()
   except Exception as exc:  # surface the live hop clearly instead of a blank page
     st.error(f"Could not initialize the bi-compute connection: {exc}")
     st.stop()
@@ -202,8 +205,8 @@ def main() -> None:
     st.write(f"**Endpoint:** `{QUACK_URI}` ({'plain HTTP' if QUACK_DISABLE_SSL else 'TLS'})")
     st.write(f"**Model:** `{SQL_MODEL}`")
     st.write(f"**R2 sink:** `{AUDIENCE_R2_PREFIX or '⚠ not configured'}`")
-    st.subheader(f"Tables ({len(table_names)})")
-    st.code("\n".join(table_names) or "(none)", language=None)
+    st.subheader(f"Lance datasets ({len(DATASETS)})")
+    st.code("\n".join(DATASETS), language=None)
 
   for turn in st.session_state.setdefault("history", []):
     with st.chat_message(turn["role"]):
@@ -246,7 +249,7 @@ def main() -> None:
       if st.button("💾 Save Audience", type="primary", use_container_width=True):
         try:
           target = materialize_audience(con, audience_name.strip(), st.session_state["last_sql"])
-          st.success(f"Materialized → `{target}` and registered `audiences.{audience_name.strip()}`.")
+          st.success(f"Materialized Lance dataset → `{target}` · query with `__lance_scan('{target}')`")
         except Exception as exc:
           st.error(f"Save failed: {exc}")
 

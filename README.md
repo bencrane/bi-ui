@@ -11,7 +11,7 @@ You (plain English)
 bi-ui (Streamlit, stateless)
    │  quack_query('quack:bi-compute:10000', sql)        # executed server-side
    ▼
-bi-compute (DuckDB 1.5.3 + quack)  ──►  R2 (Parquet) + Lance
+bi-compute (DuckDB 1.5.3 + quack + lance)  ──►  R2 (LanceDB datasets)
 ```
 
 ## How it works
@@ -24,13 +24,15 @@ bi-compute (DuckDB 1.5.3 + quack)  ──►  R2 (Parquet) + Lance
   bi-compute via `quack_query(uri, sql)`. The `ATTACH` alias itself is a streaming
   scan source and cannot serve joins or DDL in DuckDB 1.5.3, so `quack_query` (full
   server-side planner) is the execution path.
-- **Text-to-SQL.** The live schema is introspected from bi-compute's
-  `information_schema.columns` and fed to Claude with a strict read-only system
-  prompt. The model returns a single DuckDB `SELECT`; the app enforces read-only
-  before executing.
-- **Save Audience.** Materializes the (un-limited) query straight to R2 with
-  `COPY (<sql>) TO 's3://…/<name>/data.parquet'` on bi-compute, then registers a
-  queryable `audiences.<name>` table backed by that object.
+- **Text-to-SQL.** The three core LanceDB datasets are hardcoded; their columns are read
+  once via `DESCRIBE SELECT * FROM __lance_scan('s3://…')` and fed to Claude with a strict
+  prompt requiring `__lance_scan('<path>')` access — never bare table names, and never the
+  bare `FROM 's3://…'` replacement scan (the R2 dataset paths have no `.lance` suffix, so
+  only `__lance_scan` reads them). The model returns a single DuckDB `SELECT`; the app
+  enforces read-only via DuckDB's statement parser before executing.
+- **Save Audience.** Materializes the (un-limited) query as a Lance dataset on R2 with
+  `COPY (<sql>) TO 's3://…/audiences/<name>' (FORMAT lance)` on bi-compute — queryable
+  afterward by the same `__lance_scan('<path>')`.
 
 ## Zero local storage
 

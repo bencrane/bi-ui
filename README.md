@@ -24,13 +24,18 @@ bi-compute (DuckDB 1.5.3 + quack + lance)  ──►  R2 (LanceDB datasets)
   bi-compute via `quack_query(uri, sql)`. The `ATTACH` alias itself is a streaming
   scan source and cannot serve joins or DDL in DuckDB 1.5.3, so `quack_query` (full
   server-side planner) is the execution path.
-- **Dataset discovery.** Every Lance dataset under `LANCE_ACTIVE_PREFIX` (default
-  `s3://data-sink/active`) is found recursively by globbing for its `_versions/*.manifest`
-  marker, then described via `DESCRIBE SELECT * FROM __lance_scan('s3://…')`. Datasets are
-  grouped by their first path segment (domain), and the full schema is cached (30 min) and
-  fed to the model. A cold scan walks the whole `active/` prefix, so first load is slower
-  with many datasets.
-- **Text-to-SQL.** The discovered schema is fed to Claude with a strict prompt requiring
+- **Dataset catalog (Manifest Pattern).** Datasets are *not* discovered at boot. An offline
+  job (`scripts/generate_manifest.py`, run by the data pipeline) recursively finds every Lance
+  dataset under `active/`, extracts each schema, groups them by domain, and writes
+  `active/catalog.json`. The UI reads that single small JSON instantly via bi-compute
+  (`read_text`) and caches it (1 h) — no bucket globbing and no live `DESCRIBE` on the request
+  path (a recursive `**` glob over `active/` never finishes at this scale). The full catalog
+  schema is fed to the model.
+- **Lance credentials.** `__lance_scan` authenticates to R2 via **AWS_\* env vars**
+  (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` / `AWS_ENDPOINT`) on bi-compute —
+  *not* the DuckDB s3 secret (which only covers httpfs glob/read_text). Both must be set on
+  bi-compute or every Lance query fails with `Failed to get AWS credentials`.
+- **Text-to-SQL.** The catalog schema is fed to Claude with a strict prompt requiring
   `__lance_scan('<path>')` access — never bare table names, and never the bare `FROM 's3://…'`
   replacement scan (the R2 dataset paths have no `.lance` suffix, so only `__lance_scan`
   reads them). The model returns a single DuckDB `SELECT`; the app enforces read-only via
@@ -52,7 +57,8 @@ validated as safe SQL identifiers.
 | `QUACK_TOKEN` | yes | Shared quack auth token; must equal bi-compute's. |
 | `ANTHROPIC_API_KEY` | yes | For text-to-SQL (`shared-api-keys/prd`). |
 | `COHORTS_R2_PREFIX` | for saving | R2 prefix for cohorts, e.g. `s3://<bucket>/cohorts`. |
-| `LANCE_ACTIVE_PREFIX` | no | Root scanned for Lance datasets. Defaults to `s3://data-sink/active`. |
+| `LANCE_ACTIVE_PREFIX` | no | Active prefix; basis for the default catalog path. Defaults to `s3://data-sink/active`. |
+| `CATALOG_PATH` | no | Catalog JSON path. Defaults to `<LANCE_ACTIVE_PREFIX>/catalog.json`. |
 | `QUACK_URI` | no | Defaults to `quack:bi-compute:10000`. |
 | `SQL_MODEL` | no | Defaults to `claude-sonnet-4-6`. |
 | `PORT` | injected | Render sets it; Streamlit binds `0.0.0.0:$PORT`. |
@@ -67,3 +73,16 @@ bi-compute — private networking is regional). See `render.yaml`.
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Regenerating the catalog
+
+Run whenever the Lance datasets change (the data pipeline calls this; needs R2 creds — the
+script derives `AWS_*` from them for the lance `DESCRIBE`):
+
+```bash
+R2_ENDPOINT=… R2_ACCESS_KEY=… R2_SECRET_KEY=… R2_BUCKET=data-sink \
+  python scripts/generate_manifest.py
+```
+
+Writes `s3://<bucket>/active/catalog.json` (one entry per Lance dataset, grouped by domain,
+with each schema). The UI picks it up within the 1 h cache TTL or on redeploy.

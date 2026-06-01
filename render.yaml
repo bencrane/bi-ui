@@ -21,5 +21,5 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY        # Doppler shared-api-keys/prd
         sync: false
-      - key: AUDIENCE_R2_PREFIX       # e.g. s3://<curated-bucket>/audiences  (destination for materialized audiences)
+      - key: COHORTS_R2_PREFIX       # e.g. s3://<curated-bucket>/audiences  (destination for materialized audiences)
         sync: false

@@ -31,12 +31,18 @@ from anthropic import Anthropic
 # --- configuration: everything via env; no secrets on disk -------------------
 QUACK_URI = os.environ.get("QUACK_URI", "quack:bi-compute:10000")
 QUACK_TOKEN = os.environ.get("QUACK_TOKEN", "")
+# bi-compute serves plain HTTP (quack_serve disable_ssl := true). The quack client
+# defaults to SSL for hostnames (only loopback IPs default to plain), so we must
+# disable SSL explicitly on both ATTACH and quack_query or every call fails with
+# "SSL connect error". Flip to false only if bi-compute is fronted by TLS.
+QUACK_DISABLE_SSL = os.environ.get("QUACK_DISABLE_SSL", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SQL_MODEL = os.environ.get("SQL_MODEL", "claude-sonnet-4-6")
 # R2 destination for materialized audiences, e.g. s3://dex-curated/audiences
 AUDIENCE_R2_PREFIX = os.environ.get("AUDIENCE_R2_PREFIX", "").rstrip("/")
 
 ATTACH_ALIAS = "data_sink"
+_DISABLE_SSL_SQL = "true" if QUACK_DISABLE_SSL else "false"
 _IDENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _TRAILING_LIMIT_RE = re.compile(r"\s+limit\s+\d+(\s+offset\s+\d+)?\s*;?\s*$", re.IGNORECASE)
 
@@ -56,13 +62,16 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     # Temporary (in-memory) secret. Authorizes BOTH attach and quack_query().
     con.execute(f"CREATE SECRET (TYPE quack, TOKEN '{_sql_str(QUACK_TOKEN)}')")
     # Directive-mandated mount; also fails fast on bad host/token before the UI loads.
-    con.execute(f"ATTACH '{_sql_str(QUACK_URI)}' AS {ATTACH_ALIAS}")
+    # DISABLE_SSL must match the server (plain HTTP) or the attach throws "SSL connect error".
+    con.execute(f"ATTACH '{_sql_str(QUACK_URI)}' AS {ATTACH_ALIAS} (TYPE quack, DISABLE_SSL {_DISABLE_SSL_SQL})")
     return con
 
 
 def run_remote(con: duckdb.DuckDBPyConnection, sql: str):
     """Execute `sql` on bi-compute via quack_query (server-side). Returns a relation."""
-    return con.execute("SELECT * FROM quack_query(?, ?)", [QUACK_URI, sql])
+    return con.execute(
+        f"SELECT * FROM quack_query(?, ?, disable_ssl := {_DISABLE_SSL_SQL})", [QUACK_URI, sql]
+    )
 
 
 # --- live schema, introspected server-side and fed to the model --------------
@@ -190,7 +199,7 @@ def main() -> None:
 
   with st.sidebar:
     st.subheader("Connection")
-    st.write(f"**Endpoint:** `{QUACK_URI}`")
+    st.write(f"**Endpoint:** `{QUACK_URI}` ({'plain HTTP' if QUACK_DISABLE_SSL else 'TLS'})")
     st.write(f"**Model:** `{SQL_MODEL}`")
     st.write(f"**R2 sink:** `{AUDIENCE_R2_PREFIX or '⚠ not configured'}`")
     st.subheader(f"Tables ({len(table_names)})")

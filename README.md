@@ -60,7 +60,7 @@ validated as safe SQL identifiers.
 | `LANCE_ACTIVE_PREFIX` | no | Active prefix; basis for the default catalog path. Defaults to `s3://data-sink/active`. |
 | `CATALOG_PATH` | no | Catalog JSON path. Defaults to `<LANCE_ACTIVE_PREFIX>/catalog.json`. |
 | `QUACK_URI` | no | Defaults to `quack:bi-compute:10000`. |
-| `SQL_MODEL` | no | Defaults to `claude-sonnet-4-6`. |
+| `SQL_MODEL` | no | Defaults to `claude-opus-4-7`. |
 | `PORT` | injected | Render sets it; Streamlit binds `0.0.0.0:$PORT`. |
 
 ## Deploy (Render)

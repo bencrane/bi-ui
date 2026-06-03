@@ -15,7 +15,7 @@ services:
       - key: QUACK_URI
         value: quack:bi-compute:10000
       - key: SQL_MODEL
-        value: claude-sonnet-4-6
+        value: claude-opus-4-7
       # Secrets — set in the dashboard / sourced from Doppler. Never commit values.
       - key: QUACK_TOKEN              # must equal bi-compute's QUACK_TOKEN (the auth_token it serves)
         sync: false

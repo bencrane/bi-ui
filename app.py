@@ -41,7 +41,7 @@ QUACK_TOKEN = os.environ.get("QUACK_TOKEN", "")
 # "SSL connect error". Flip to false only if bi-compute is fronted by TLS.
 QUACK_DISABLE_SSL = os.environ.get("QUACK_DISABLE_SSL", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-SQL_MODEL = os.environ.get("SQL_MODEL", "claude-sonnet-4-6")
+SQL_MODEL = os.environ.get("SQL_MODEL", "claude-opus-4-7")
 # R2 destination for materialized cohorts, e.g. s3://data-sink/active/cohorts
 COHORTS_R2_PREFIX = os.environ.get("COHORTS_R2_PREFIX", "").rstrip("/")
 

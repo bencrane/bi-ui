@@ -4,3 +4,7 @@ duckdb==1.5.3
 streamlit==1.40.2
 anthropic==0.69.0
 pandas==2.2.3
+# Charting surfaces the result router draws into. Both ship transitively with
+# streamlit 1.40.2; pinned explicitly here because app.py now imports them directly.
+altair==5.4.1
+pydeck==0.9.1
